@@ -9,15 +9,22 @@ from fastapi.openapi.docs import (
 from fastapi.staticfiles import StaticFiles
 from b_e.config import config
 from b_e.app.controllers import router
-from b_e.database import test_db
-from pathlib import Path
+from b_e.database import init_database, test_db, engine, Base
 import os
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await init_database()
     await test_db()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     yield
+    # Shutdown
+    await engine.dispose()
+
 
 app = FastAPI(
     title=config['PROJECT_NAME'],
