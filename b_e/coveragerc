@@ -1,0 +1,14 @@
+# This is the coverage config when running all tests (integration tests included)
+
+[run]
+branch = True
+data_file = /tmp/coverage
+omit =
+    */init_db.py
+    */tests/*
+
+[html]
+directory = /tmp/coverage_report
+
+[xml]
+output = /tmp/coverage_report/coverage.xml

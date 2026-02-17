@@ -1,0 +1,14 @@
+fastapi>=0.128.4
+uvicorn[standard]>=0.40.0
+sqlalchemy[asyncio]>=2.0.46
+asyncpg>=0.31.0
+alembic>=1.18.3
+pydantic-settings>=2.12.0
+python-dotenv>=1.0.1      # Latest vẫn là 1.0.1, ổn định
+pytest>=9.0.2
+pytest-asyncio>=1.3.0
+httpx>=0.28.1
+# JWT & Authentication
+pyjwt>=2.10.1
+passlib[bcrypt]>=1.7.4          # để hash password (bcrypt là lựa chọn tốt)
+python-multipart>=0.0.20        # cần cho form login (username + password)
