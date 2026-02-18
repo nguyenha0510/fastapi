@@ -10,11 +10,13 @@ from fastapi.staticfiles import StaticFiles
 from b_e.config import config
 from b_e.app.controllers import router
 from b_e.database import init_database, test_db, engine, Base
+from b_e.helpers.security_jwt.security_jwt import generate_rsa_key
 import os
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await generate_rsa_key()
     await init_database()
     await test_db()
 
