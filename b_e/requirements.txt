@@ -13,3 +13,4 @@ pyjwt>=2.10.1
 passlib[bcrypt]>=1.7.4          # để hash password (bcrypt là lựa chọn tốt)
 python-multipart>=0.0.20        # cần cho form login (username + password)
 cryptography
+argon2-cffi

@@ -1,80 +1,140 @@
+from datetime import timedelta, datetime, timezone
+from typing import Optional
+
+import jwt
 from fastapi import Request, HTTPException, status
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
-import json
-import base64
-from datetime import datetime, timedelta, timezone
-from pydantic import json
+from jwt import ExpiredSignatureError, InvalidSignatureError, InvalidTokenError
 
 from b_e.config import config
 
-async def generate_rsa_key():
+async def generate_rsa_key_pair(key_size=2048):
     private_key = rsa.generate_private_key(
-        public_exponent=65537,  # Giá trị chuẩn và an toàn
-        key_size=2048,  # 2048 hoặc 3072/4096
-        backend=default_backend()  # Không cần chỉ định ở phiên bản mới, nhưng giữ cho tương thích
+        public_exponent=65537,
+        key_size=key_size,
+        backend=default_backend()
     )
 
     public_key = private_key.public_key()
 
-    config['PRIVATE_KEY'] = private_key
-    config['PUBLIC_KEY'] = public_key
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode('utf-8')
 
-def encode_cookie(data: dict):
-    json_str = json.dumps(data, separators=(",", ":"))  # gọn nhất có thể
-    plaintext = json_str.encode("utf-8")
+    # Public key (SubjectPublicKeyInfo PEM)
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode('utf-8')
+
+    config['PRIVATE_KEY'] = private_pem
+    config['PUBLIC_KEY'] = public_pem
+
+def create_access_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None
+    ) -> str:
+    to_encode = data.copy()
+
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(days=config['ACCESS_TOKEN_EXPIRE_DAYS'])
+    )
+
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    })
+
+    encoded_jwt = jwt.encode(
+        to_encode,
+        config['PRIVATE_KEY'],
+        algorithm=config['ALGORITHM']
+    )
+    return encoded_jwt
+
+def create_auth_cookie(account: str, days_valid: int = config['ACCESS_TOKEN_EXPIRE_DAYS']) -> str:
+    payload = {"account": account}
+    return create_access_token(payload, timedelta(days=days_valid))
+
+
+async def decode_and_verify_cookie(request: Request):
+    cookie_header = request.headers.get("cookie")
+    if not cookie_header:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    access_token = None
+    for part in cookie_header.split("; "):
+        if part.startswith("access_token_cookie="):
+            access_token = part.split("=", 1)[1]
+            break
+
+    if not access_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    try:
+        payload = jwt.decode(
+            access_token,
+            config['PUBLIC_KEY'],
+            algorithms=[config['ALGORITHM']],
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "require": ["exp", "iat"],
+            }
+        )
+
+        account = payload.get("account")
+        if not account:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        request.state.current_user = account
+        return account
+
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    except (InvalidSignatureError, InvalidTokenError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+def encrypt_with_public_key(kwargs) -> str:
+    if len(kwargs) > 190:
+        raise ValueError(f"Dữ liệu quá lớn ({len(kwargs)} bytes). RSA 2048 chỉ mã hóa được ~190 byte.")
 
     ciphertext = config['PUBLIC_KEY'].encrypt(
-        plaintext,
+        kwargs,
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
             label=None
         )
     )
-    return base64.urlsafe_b64encode(ciphertext).decode("utf-8")
+    return ciphertext
 
-def decode_cookie(request: Request):
-    cookie = request.headers.get('cookie')
-    if not cookie:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+def decrypt_with_private_key(ciphertext: str):
+    plaintext = config['PRIVATE_KEY'].decrypt(
+        ciphertext,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
         )
-    else:
-        list_value_creator = cookie.split("; ")
-        if not any(value.startswith('access_token_cookie') for value in cookie.split("; ")):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-            )
-        else:
-            for value in list_value_creator:
-                if value.startswith('access_token_cookie'):
-                    access_token = value.split('access_token_cookie=')
-                    try:
-                        ciphertext = base64.urlsafe_b64decode(access_token[1])
-                        plaintext = config['PRIVATE_KEY'].decrypt(
-                            ciphertext,
-                            padding.OAEP(
-                                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                                algorithm=hashes.SHA256(),
-                                label=None
-                            )
-                        )
-                        data = json.loads(plaintext.decode("utf-8"))
-                        if data.get('exp') < datetime.now(timezone.utc):
-                            raise HTTPException(
-                                status_code=status.HTTP_401_UNAUTHORIZED,
-                            )
-                        else:
-                            request.state.current_user = data.get('account')
-                    except Exception:
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                        )
+    )
 
-def create_auth_cookie(account: str, days_valid: int = 1) -> str:
-    """Tạo giá trị cookie đã mã hóa"""
-    expire_at = int((datetime.now(timezone.utc) + timedelta(days=days_valid)).timestamp())
-    data = {"account": account, "exp": expire_at}
-    return encode_cookie(data)
+    return plaintext
